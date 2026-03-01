@@ -1,0 +1,191 @@
+---
+  title: "stroke_prediction"
+author: "Mustafain Ali"
+date: "`r Sys.Date()`"
+output:
+  html_document: default
+pdf_document: default
+---
+  
+# About Data Analysis Report
+  
+#This RMarkdown file contains the report of the data analysis done for the project on building and deploying a stroke prediction model in R. It contains analysis such as data exploration, summary statistics and building the prediction models. The final report was completed on `r date()`. 
+
+#**Data Description:**
+  
+#According to the World Health Organization (WHO) stroke is the 2nd leading cause of death globally, responsible for approximately 11% of total deaths.
+
+#This data set is used to predict whether a patient is likely to get stroke based on the input parameters like gender, age, various diseases, and smoking status. Each row in the data provides relevant information about the patient.
+
+
+# Task One: Import data and data preprocessing
+
+## Load data and install packages
+
+library(tidyverse)
+library(janitor)
+library(pROC)
+library(tidymodels)
+
+#Loading and reading the CSV File
+df <- read_csv("healthcare-dataset-stroke-data.csv",  na = c("", "NA", "N/A"))
+# There are 6 character type columns and 6 numeric type columns but we convert number like characters to numerics
+
+# Lets clean up the names (like make them lowercases)
+df <- clean_names(df)
+
+#Lets remove unnecessary columsn like patient ids
+df <- select(df,-id)
+
+#We can make stroke a categorical variable 
+df$stroke <- as.factor(df$stroke)
+
+head(df)
+glimpse(df)
+
+
+## Describe and explore the data
+# we can get a basic summary of the numeric columns using summary command
+summary(df)
+
+# The % of strokes
+table(df$stroke)
+
+#0 means there are no strokes and 1 means there are strokes
+
+prop.table(table(df$stroke))*100
+# Terminal shows that only ~5% people experience strokes. 
+
+#Lets look for missing values 
+colSums(is.na(df))
+
+#Time to visualize a bit
+ggplot(df, aes(x = age))+geom_histogram(bins = 30) + labs(title = "Distribution of Age")
+
+ggplot(df, aes(x = stroke)) + 
+  geom_bar() + 
+  labs(title = "Stroke Class Counts", x = "Stroke (0=No, 1=Yes)", y = "Count")
+
+
+
+# Task Two: Build prediction models
+
+#Train/Test Split
+set.seed(7788)
+
+split_obj <- initial_split(df, prop = 0.8, strata = stroke)
+
+train <- training(split_obj)
+test <- testing(split_obj)
+
+#lets verify if the rows sum to 5011
+nrow(train)
+nrow(test)
+
+#lets verify if split was correct in test and train and whether class balance is similar!
+prop.table(table(train$stroke))*100
+prop.table(table(test$stroke))*100
+
+#imputing missing values with medians from training set
+median_bmi <- median(train$bmi, na.rm = TRUE)
+train$bmi[is.na(train$bmi)] <- median_bmi
+test$bmi[is.na(test$bmi)] <- median_bmi
+
+#Other things to do is to convert the categorical features into factors!
+cat_col <- c("gender", "ever_married", "work_type", "residence_type", "smoking_status")
+
+for (col in cat_col) {
+  train[[col]] <- as.factor(train[[col]])
+  test[[col]]  <- as.factor(test[[col]])
+  test[[col]]  <- factor(test[[col]], levels = levels(train[[col]]))
+}
+# Now that we have the data ready, lets use LOGISTIC REGRESSION as our first predictive model
+
+model_logr = glm(stroke ~., data = train, family = binomial, weights = ifelse(train$stroke == 1, 2, 1))
+
+#we have added weights which penalize missing stroke more! this is to address the class imabalnce... could have used SMOTe but umm.. this one was simpler. Maybe in scenario 2 I will use SMOTE.
+
+summary(model_logr)
+
+
+
+
+# Task Three: Evaluate and select prediction models
+
+pred_prob <- predict(model_logr, newdata = test, type = "response")
+
+head(pred_prob)
+
+threshold <- 0.10
+pred_class <- ifelse(pred_prob >= threshold, 1, 0)
+
+# now that we have teh prediction probabilities, lets geta confusion matrix to check FP and FNs
+
+conf <- table(Predicted = pred_class, Actual = test$stroke)
+conf
+
+#Related mterics computation
+TP <- conf["1","1"]
+FN <- conf["0","1"]
+TN <- conf["0","0"]
+FP <- conf["1","0"]
+
+accuracy <- (TP+TN)/(TP+TN+FP+FN)
+sensitivity <- TP / (TP + FN) 
+specificity <- TN / (TN + FP)
+
+accuracy
+sensitivity
+specificity
+
+roc_obj <- roc(test$stroke, pred_prob)
+auc(roc_obj)
+
+
+plot(roc_obj, main = "ROC Curve - Logistic Regression")
+abline(a=0, b=1, lty = 2)
+
+
+
+# Task Four: Deploy the prediction model
+
+# I am going to deploy this with a simpel function that takes one patients info and returns their predicted probability of stroke
+
+predict_stroke_risk <- function(new_patient_row) {
+  predict(model_logr, newdata = new_patient_row, type = "response")
+}
+
+#Example making up FAKE patient data
+new_patient <- tibble(
+  gender = factor("Male", levels = levels(train$gender)),
+  age = 37,
+  hypertension = 1,
+  heart_disease = 0,
+  ever_married = factor("Yes", levels = levels(train$ever_married)),
+  work_type = factor("Private", levels = levels(train$work_type)),
+  residence_type = factor("Urban", levels = levels(train$residence_type)),
+  avg_glucose_level = 160,
+  bmi = 28.5,
+  smoking_status = factor("formerly smoked", levels = levels(train$smoking_status)),
+)
+
+predict_stroke_risk(new_patient)
+
+
+
+
+# Task Five: Findings and Conclusions
+##
+#- The dataset contains both demographic and clinical features and the data distribution shows that stroke is a rare outcome. This fact suggests that there is a class imabalnce. 
+# We did a 80/20 train/test data split based on stratification by stroke.
+#- I used logistic regression to estimate stroke probability. It was an arbitrary choice. Ideally we should test different models and decide based on evaluation metrics which one should be used. 
+#- Model performance was evaluated using the confusion matric and ROC-AUC. 
+#- By changing the parameters of the new patient data, once can get an estinate of teh risk of stroke to that person. 
+#
+#**RESULTS: interpretation**
+#  - AS we can see, the confusion matrix predicts that 31 cases were corretcly detected, 15 were missed, but there were 250 false positives which is a lot so we might need to do some more thresholds/weight adjustement. That said, 726 non-strokes were correctly identified. 
+#- A 67% sensitivity means I was able to catch 67% of the real stroke cases which is good from a medical screening perspective but it should be higher!
+#  - The 74% specificity and accuracy are tradeoffs for higher sensitivity due to the weighted schemes used.
+#- An AUC of 80% reflects that if we randomly choose one stroke and one non-stroke patient, my model will rank the stroke patient higher 80% of the time. Looks solid enough!
+#- The ROC curve is clearly above the diagonal, no visible breaks. 
+
